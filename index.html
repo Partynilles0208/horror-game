@@ -123,6 +123,7 @@
         let trailerMusicGain, trailerOscA, trailerOscB, trailerLfo, trailerLaughGain;
         let isMobile = false;
         let joyActive = false, joyCenter = { x: 0, y: 0 }, joyVec = { x: 0, y: 0 };
+        let joyTouchId = null;
         let lookTouchId = null, lastLookX = 0, lastLookY = 0;
         let tapCount = 0, lastTapTime = 0;
 
@@ -383,8 +384,8 @@
                     dir.x += joyVec.x;
                     dir.z += joyVec.y;
                 }
-                const baseSpeed = (mode === 'escape' && moveF) ? 0.22 : 0.13;
-                const speed = isMobile ? baseSpeed * 1.6 : baseSpeed;
+                const baseSpeed = (mode === 'escape' && (moveF || (isMobile && (Math.abs(joyVec.x) + Math.abs(joyVec.y) > 0.1)))) ? 0.22 : 0.13;
+                const speed = isMobile ? baseSpeed * 2.2 : baseSpeed;
                 dir.applyEuler(new THREE.Euler(0, yaw, 0)).normalize().multiplyScalar(speed);
                 if(mode === 'normal') {
                     if(!isWall(Math.round((camera.position.x + dir.x)/4), Math.round(camera.position.z/4))) camera.position.x += dir.x;
@@ -901,9 +902,10 @@
             const stick = document.getElementById('stick');
             joy.style.display = 'block';
 
-            const startDrag = (x, y) => {
+            const startDrag = (x, y, id) => {
                 joyActive = true;
                 joyCenter = { x, y };
+                joyTouchId = id;
             };
             const moveDrag = (x, y) => {
                 if(!joyActive) return;
@@ -919,6 +921,7 @@
             };
             const endDrag = () => {
                 joyActive = false;
+                joyTouchId = null;
                 stick.style.transform = 'translate(0px, 0px)';
                 joyVec.x = 0;
                 joyVec.y = 0;
@@ -926,13 +929,18 @@
 
             joy.addEventListener('touchstart', e => {
                 const t = e.changedTouches[0];
-                startDrag(t.clientX, t.clientY);
+                startDrag(t.clientX, t.clientY, t.identifier);
             }, { passive: true });
             joy.addEventListener('touchmove', e => {
-                const t = e.changedTouches[0];
+                const touches = Array.from(e.changedTouches);
+                const t = touches.find(tch => tch.identifier === joyTouchId);
+                if(!t) return;
                 moveDrag(t.clientX, t.clientY);
             }, { passive: true });
-            joy.addEventListener('touchend', endDrag, { passive: true });
+            joy.addEventListener('touchend', e => {
+                const touches = Array.from(e.changedTouches);
+                if(touches.some(t => t.identifier === joyTouchId)) endDrag();
+            }, { passive: true });
 
             document.addEventListener('touchstart', e => {
                 if(e.target.closest && e.target.closest('#joystick')) return;
