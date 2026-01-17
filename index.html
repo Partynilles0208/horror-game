@@ -131,8 +131,8 @@
             document.getElementById('start').style.display = 'none';
             document.getElementById('radar').style.display = 'block';
             isMobile = detectMobile();
+            requestFullScreen();
             if(!isMobile) document.body.requestPointerLock();
-            else requestFullScreen();
             initAlarm();
             initAudio();
             init();
