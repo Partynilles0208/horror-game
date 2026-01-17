@@ -132,10 +132,14 @@
             document.getElementById('radar').style.display = 'block';
             isMobile = detectMobile();
             requestFullScreen();
-            if(!isMobile) document.body.requestPointerLock();
             initAlarm();
             initAudio();
             init();
+            if(!isMobile) {
+                setTimeout(() => {
+                    if(renderer && renderer.domElement) renderer.domElement.requestPointerLock();
+                }, 0);
+            }
         }
 
         function startTrailer() {
