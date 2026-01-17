@@ -25,6 +25,17 @@
             background: rgba(140, 0, 0, 0.7); opacity: 0;
             mix-blend-mode: screen;
         }
+        #joystick {
+            position: fixed; left: 20px; bottom: 20px; width: 140px; height: 140px;
+            border-radius: 50%; border: 2px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.25); display: none; z-index: 1300;
+            touch-action: none;
+        }
+        #stick {
+            position: absolute; left: 50%; top: 50%; width: 60px; height: 60px;
+            margin-left: -30px; margin-top: -30px; border-radius: 50%;
+            background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.35);
+        }
         #countdown, #message {
             position: fixed; inset: 0; z-index: 1200; pointer-events: none;
             display: flex; align-items: center; justify-content: center;
@@ -67,6 +78,7 @@
     <div id="static"></div>
     <div id="whisper"></div>
     <div id="alarm"></div>
+    <div id="joystick"><div id="stick"></div></div>
     <div id="countdown"></div>
     <div id="message"></div>
     <div id="start">
@@ -109,11 +121,16 @@
         let trailerStart = 0;
         let trailerEvents = new Set();
         let trailerMusicGain, trailerOscA, trailerOscB, trailerLfo, trailerLaughGain;
+        let isMobile = false;
+        let joyActive = false, joyCenter = { x: 0, y: 0 }, joyVec = { x: 0, y: 0 };
+        let tapCount = 0, lastTapTime = 0;
 
         function start() {
             document.getElementById('start').style.display = 'none';
             document.getElementById('radar').style.display = 'block';
-            document.body.requestPointerLock();
+            isMobile = detectMobile();
+            if(!isMobile) document.body.requestPointerLock();
+            else requestFullScreen();
             initAlarm();
             initAudio();
             init();
@@ -192,8 +209,8 @@
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
-            renderer.shadowMap.enabled = true;
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isMobile ? 1 : 1.25));
+            renderer.shadowMap.enabled = !isMobile;
             document.body.appendChild(renderer.domElement);
 
             const texLoader = new THREE.TextureLoader();
@@ -250,7 +267,7 @@
 
             // --- TASCHENLAMPE FIX ---
             torch = new THREE.SpotLight(0xffffff, 5, 25, Math.PI/6, 0.5);
-            torch.castShadow = true;
+            torch.castShadow = !isMobile;
             torch.position.set(0, 0, 0);
             camera.add(torch);
 
@@ -297,6 +314,7 @@
             scene.add(monster);
 
             setupControls();
+            if(isMobile) setupMobileControls();
             animate();
         }
 
@@ -360,6 +378,10 @@
             if(canMove) {
                 if(moveF) dir.z -= 1; if(moveB) dir.z += 1;
                 if(moveL) dir.x -= 1; if(moveR) dir.x += 1;
+                if(isMobile) {
+                    dir.x += joyVec.x;
+                    dir.z += joyVec.y;
+                }
                 const speed = (mode === 'escape' && moveF) ? 0.22 : 0.13;
                 dir.applyEuler(new THREE.Euler(0, yaw, 0)).normalize().multiplyScalar(speed);
                 if(mode === 'normal') {
@@ -861,6 +883,86 @@
             document.body.classList.remove('alarm');
             chaseActive = false;
             monster.position.set(0, -10, 0);
+        }
+
+        function detectMobile() {
+            return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 1);
+        }
+
+        function requestFullScreen() {
+            const el = document.documentElement;
+            if(el.requestFullscreen) el.requestFullscreen().catch(() => {});
+        }
+
+        function setupMobileControls() {
+            const joy = document.getElementById('joystick');
+            const stick = document.getElementById('stick');
+            joy.style.display = 'block';
+
+            const startDrag = (x, y) => {
+                joyActive = true;
+                joyCenter = { x, y };
+            };
+            const moveDrag = (x, y) => {
+                if(!joyActive) return;
+                const dx = x - joyCenter.x;
+                const dy = y - joyCenter.y;
+                const max = 45;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                const nx = dist > max ? (dx / dist) * max : dx;
+                const ny = dist > max ? (dy / dist) * max : dy;
+                stick.style.transform = `translate(${nx}px, ${ny}px)`;
+                joyVec.x = nx / max;
+                joyVec.y = ny / max;
+            };
+            const endDrag = () => {
+                joyActive = false;
+                stick.style.transform = 'translate(0px, 0px)';
+                joyVec.x = 0;
+                joyVec.y = 0;
+            };
+
+            joy.addEventListener('touchstart', e => {
+                const t = e.touches[0];
+                startDrag(t.clientX, t.clientY);
+            }, { passive: true });
+            joy.addEventListener('touchmove', e => {
+                const t = e.touches[0];
+                moveDrag(t.clientX, t.clientY);
+            }, { passive: true });
+            joy.addEventListener('touchend', endDrag, { passive: true });
+
+            let lastTouchX = 0, lastTouchY = 0;
+            document.addEventListener('touchstart', e => {
+                if(e.target.closest && e.target.closest('#joystick')) return;
+                lastTouchX = e.touches[0].clientX;
+                lastTouchY = e.touches[0].clientY;
+                handleRouteTap();
+            }, { passive: true });
+            document.addEventListener('touchmove', e => {
+                if(e.target.closest && e.target.closest('#joystick')) return;
+                const t = e.touches[0];
+                const dx = t.clientX - lastTouchX;
+                const dy = t.clientY - lastTouchY;
+                lastTouchX = t.clientX;
+                lastTouchY = t.clientY;
+                yaw -= dx * 0.002;
+                pitch -= dy * 0.002;
+                pitch = Math.max(-1.4, Math.min(1.4, pitch));
+            }, { passive: true });
+        }
+
+        function handleRouteTap() {
+            if(mode !== 'normal') return;
+            const now = Date.now();
+            if(now - lastTapTime > 1500) tapCount = 0;
+            lastTapTime = now;
+            tapCount += 1;
+            if(tapCount >= 5) {
+                tapCount = 0;
+                ensurePortal();
+                showRouteToPortal();
+            }
         }
 
         function updateTrailer(time) {
