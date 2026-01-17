@@ -383,7 +383,8 @@
                     dir.x += joyVec.x;
                     dir.z += joyVec.y;
                 }
-                const speed = (mode === 'escape' && moveF) ? 0.22 : 0.13;
+                const baseSpeed = (mode === 'escape' && moveF) ? 0.22 : 0.13;
+                const speed = isMobile ? baseSpeed * 1.6 : baseSpeed;
                 dir.applyEuler(new THREE.Euler(0, yaw, 0)).normalize().multiplyScalar(speed);
                 if(mode === 'normal') {
                     if(!isWall(Math.round((camera.position.x + dir.x)/4), Math.round(camera.position.z/4))) camera.position.x += dir.x;
