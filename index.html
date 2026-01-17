@@ -26,14 +26,14 @@
             mix-blend-mode: screen;
         }
         #joystick {
-            position: fixed; left: 20px; bottom: 20px; width: 140px; height: 140px;
+            position: fixed; left: 20px; bottom: 20px; width: 190px; height: 190px;
             border-radius: 50%; border: 2px solid rgba(255,255,255,0.2);
             background: rgba(0,0,0,0.25); display: none; z-index: 1300;
             touch-action: none;
         }
         #stick {
-            position: absolute; left: 50%; top: 50%; width: 60px; height: 60px;
-            margin-left: -30px; margin-top: -30px; border-radius: 50%;
+            position: absolute; left: 50%; top: 50%; width: 80px; height: 80px;
+            margin-left: -40px; margin-top: -40px; border-radius: 50%;
             background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.35);
         }
         #countdown, #message {
@@ -123,6 +123,7 @@
         let trailerMusicGain, trailerOscA, trailerOscB, trailerLfo, trailerLaughGain;
         let isMobile = false;
         let joyActive = false, joyCenter = { x: 0, y: 0 }, joyVec = { x: 0, y: 0 };
+        let lookTouchId = null, lastLookX = 0, lastLookY = 0;
         let tapCount = 0, lastTapTime = 0;
 
         function start() {
@@ -907,7 +908,7 @@
                 if(!joyActive) return;
                 const dx = x - joyCenter.x;
                 const dy = y - joyCenter.y;
-                const max = 45;
+                const max = 65;
                 const dist = Math.sqrt(dx*dx + dy*dy);
                 const nx = dist > max ? (dx / dist) * max : dx;
                 const ny = dist > max ? (dy / dist) * max : dy;
@@ -923,32 +924,40 @@
             };
 
             joy.addEventListener('touchstart', e => {
-                const t = e.touches[0];
+                const t = e.changedTouches[0];
                 startDrag(t.clientX, t.clientY);
             }, { passive: true });
             joy.addEventListener('touchmove', e => {
-                const t = e.touches[0];
+                const t = e.changedTouches[0];
                 moveDrag(t.clientX, t.clientY);
             }, { passive: true });
             joy.addEventListener('touchend', endDrag, { passive: true });
 
-            let lastTouchX = 0, lastTouchY = 0;
             document.addEventListener('touchstart', e => {
                 if(e.target.closest && e.target.closest('#joystick')) return;
-                lastTouchX = e.touches[0].clientX;
-                lastTouchY = e.touches[0].clientY;
+                const t = e.changedTouches[0];
+                lookTouchId = t.identifier;
+                lastLookX = t.clientX;
+                lastLookY = t.clientY;
                 handleRouteTap();
             }, { passive: true });
             document.addEventListener('touchmove', e => {
-                if(e.target.closest && e.target.closest('#joystick')) return;
-                const t = e.touches[0];
-                const dx = t.clientX - lastTouchX;
-                const dy = t.clientY - lastTouchY;
-                lastTouchX = t.clientX;
-                lastTouchY = t.clientY;
+                const touches = Array.from(e.changedTouches);
+                const t = touches.find(tch => tch.identifier === lookTouchId);
+                if(!t) return;
+                const dx = t.clientX - lastLookX;
+                const dy = t.clientY - lastLookY;
+                lastLookX = t.clientX;
+                lastLookY = t.clientY;
                 yaw -= dx * 0.002;
                 pitch -= dy * 0.002;
                 pitch = Math.max(-1.4, Math.min(1.4, pitch));
+            }, { passive: true });
+            document.addEventListener('touchend', e => {
+                const touches = Array.from(e.changedTouches);
+                if(touches.some(t => t.identifier === lookTouchId)) {
+                    lookTouchId = null;
+                }
             }, { passive: true });
         }
 
