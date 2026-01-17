@@ -327,8 +327,8 @@
         function setupControls() {
             window.addEventListener('mousemove', e => {
                 if(mode === 'cutscene' || mode === 'win' || mode === 'trailer') return;
-                yaw -= e.movementX * 0.002;
-                pitch -= e.movementY * 0.002;
+                yaw -= e.movementX * 0.0032;
+                pitch -= e.movementY * 0.0032;
                 pitch = Math.max(-1.4, Math.min(1.4, pitch));
             });
             window.addEventListener('keydown', e => {
@@ -949,8 +949,8 @@
                 const dy = t.clientY - lastLookY;
                 lastLookX = t.clientX;
                 lastLookY = t.clientY;
-                yaw -= dx * 0.002;
-                pitch -= dy * 0.002;
+                yaw -= dx * 0.0035;
+                pitch -= dy * 0.0035;
                 pitch = Math.max(-1.4, Math.min(1.4, pitch));
             }, { passive: true });
             document.addEventListener('touchend', e => {
