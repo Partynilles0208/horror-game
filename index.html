@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>BLINZELN - DON'T LOOK</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+        #radar {
+            position: absolute; top: 20px; left: 20px; width: 140px; height: 140px;
+            background: rgba(0, 10, 0, 0.8); border: 2px solid #0f0; border-radius: 50%;
+            z-index: 100; overflow: hidden; display: none;
+        }
+        #radar-monster { position: absolute; width: 10px; height: 10px; background: red; border-radius: 50%; display: none; box-shadow: 0 0 10px red; }
+        #radar-player { position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; background: white; border-radius: 50%; transform: translate(-50%, -50%); }
+        #blink { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; opacity: 0; z-index: 1000; pointer-events: none; }
+        #start { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 2000; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; }
+        button { background: none; border: 1px solid red; color: red; padding: 20px 40px; font-size: 20px; cursor: pointer; margin-top: 20px; }
+        #warning { position: fixed; bottom: 20px; width: 100%; text-align: center; color: #440000; font-size: 12px; pointer-events: none; }
+        #vignette, #static, #whisper {
+            position: fixed; inset: 0; pointer-events: none; z-index: 900;
+        }
+        #alarm {
+            position: fixed; inset: 0; pointer-events: none; z-index: 950;
+            background: rgba(140, 0, 0, 0.7); opacity: 0;
+            mix-blend-mode: screen;
+        }
+        #countdown, #message {
+            position: fixed; inset: 0; z-index: 1200; pointer-events: none;
+            display: flex; align-items: center; justify-content: center;
+            color: #ff3333; font-size: 54px; letter-spacing: 6px;
+            text-transform: uppercase; text-shadow: 0 0 18px rgba(255, 0, 0, 0.6);
+            opacity: 0; transition: opacity 0.2s ease;
+        }
+        #message { font-size: 42px; color: #ff0000; }
+        #vignette {
+            background: radial-gradient(circle at center, rgba(0,0,0,0) 0%, rgba(0,0,0,0.35) 55%, rgba(0,0,0,0.85) 100%);
+            mix-blend-mode: multiply;
+            animation: breathe 6s ease-in-out infinite;
+        }
+        #static {
+            background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.03), rgba(255,255,255,0.03) 1px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 3px);
+            opacity: 0.12;
+            animation: grain 0.18s steps(2) infinite, flicker 4s infinite;
+        }
+        #whisper {
+            display: flex; align-items: center; justify-content: center;
+            color: rgba(180, 0, 0, 0.4); font-size: 24px; letter-spacing: 6px;
+            text-transform: uppercase; opacity: 0; transition: opacity 0.3s ease;
+            text-shadow: 0 0 12px rgba(120, 0, 0, 0.6);
+        }
+        .panic #vignette { animation: breathe 3s ease-in-out infinite; }
+        .panic #static { opacity: 0.22; }
+        .panic #warning { color: #880000; }
+        .alarm #alarm { opacity: 0.65; animation: alarmFlash 0.35s steps(2) infinite; }
+        @keyframes grain { from { transform: translate(0,0); } to { transform: translate(-1%, 1%); } }
+        @keyframes flicker { 0%, 100% { opacity: 0.1; } 30% { opacity: 0.2; } 50% { opacity: 0.05; } 80% { opacity: 0.18; } }
+        @keyframes breathe { 0%,100% { opacity: 0.65; } 50% { opacity: 0.9; } }
+        @keyframes alarmFlash { 0% { opacity: 0.2; } 50% { opacity: 0.8; } 100% { opacity: 0.2; } }
+    </style>
+</head>
+<body>
+
+    <div id="radar"><div id="radar-player"></div><div id="radar-monster"></div></div>
+    <div id="blink"></div>
+    <div id="vignette"></div>
+    <div id="static"></div>
+    <div id="whisper"></div>
+    <div id="alarm"></div>
+    <div id="countdown"></div>
+    <div id="message"></div>
+    <div id="start">
+        <h1 style="color:red; letter-spacing: 10px;">BLINZELN</h1>
+        <p>Schau es nicht direkt an.</p>
+        <button onclick="start()">ERWACHEN</button>
+    </div>
+    <div id="warning">LICHT FEHLER: ÜBERLASTUNG BEI BLICKKONTAKT</div>
+
+    <script>
+        let scene, camera, renderer, monster, torch, torchTarget, clock;
+        let yaw = 0, pitch = 0, lastBlink = 0;
+        let moveF = false, moveB = false, moveL = false, moveR = false;
+        let walls = new Map();
+        let audioCtx, humGain, heartGain, noiseGain, panicLevel = 0;
+        let alarmAudio, alarmActive = false;
+        let lastWhisper = 0, whisperTexts = [
+            "hinter dir", "nicht blinzeln", "siehst du mich", "zu spaet"
+        ];
+        let peeking = false, peekStart = 0, peekDuration = 1200;
+        let wallTexture, floorTexture, wallMaterial, floorMaterial, lampMaterial;
+        let alarmLights = [];
+        let renderTarget, postScene, postCamera, postMaterial;
+        let mode = 'normal';
+        let countdownEnd = 0;
+        let lookBackUntil = 0;
+        let cutsceneStart = 0;
+        let cutsceneBaseYaw = 0;
+        let corridorGroup, corridorLights = [], doorMesh;
+        let chaseMonsters = [];
+        let chaseActive = false;
+        let corridorStartZ = 0;
+        let corridorLength = 520;
+        let normalFogFar = 18;
+        let escapeFogFar = 130;
+        let cutsceneLight;
+        let portalMesh, portalActive = false, portalCell = null;
+        let routeLine, routeTimeout = null;
+        let lastMazeUpdate = 0;
+        let trailerStart = 0;
+        let trailerEvents = new Set();
+        let trailerMusicGain, trailerOscA, trailerOscB, trailerLfo, trailerLaughGain;
+
+        function start() {
+            document.getElementById('start').style.display = 'none';
+            document.getElementById('radar').style.display = 'block';
+            document.body.requestPointerLock();
+            initAlarm();
+            initAudio();
+            init();
+        }
+
+        function startTrailer() {
+            document.getElementById('start').style.display = 'none';
+            document.getElementById('radar').style.display = 'none';
+            initAlarm();
+            initAudio();
+            init();
+            mode = 'trailer';
+            trailerStart = Date.now();
+            trailerEvents.clear();
+            setupTrailerScene();
+            initTrailerAudio();
+        }
+
+        function initAlarm() {
+            alarmAudio = new Audio('alarm.mp3');
+            alarmAudio.preload = 'auto';
+            alarmAudio.addEventListener('ended', () => {
+                alarmActive = false;
+                document.body.classList.remove('alarm');
+            });
+        }
+
+        function initAudio() {
+            if(audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const master = audioCtx.createGain();
+            master.gain.value = 0.4;
+            master.connect(audioCtx.destination);
+
+            const hum = audioCtx.createOscillator();
+            hum.type = 'sine';
+            hum.frequency.value = 36;
+            humGain = audioCtx.createGain();
+            humGain.gain.value = 0.15;
+            hum.connect(humGain).connect(master);
+            hum.start();
+
+            const heart = audioCtx.createOscillator();
+            heart.type = 'triangle';
+            heart.frequency.value = 1.2;
+            heartGain = audioCtx.createGain();
+            heartGain.gain.value = 0.0;
+            heart.connect(heartGain).connect(master);
+            heart.start();
+
+            const bufferSize = audioCtx.sampleRate * 2;
+            const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for(let i = 0; i < bufferSize; i++) {
+                data[i] = (Math.random() * 2 - 1) * 0.6;
+            }
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = buffer;
+            noise.loop = true;
+            const band = audioCtx.createBiquadFilter();
+            band.type = 'bandpass';
+            band.frequency.value = 900;
+            noiseGain = audioCtx.createGain();
+            noiseGain.gain.value = 0.0;
+            noise.connect(band).connect(noiseGain).connect(master);
+            noise.start();
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.Fog(0x000000, 1, normalFogFar);
+            clock = new THREE.Clock();
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.7, 0); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            const texLoader = new THREE.TextureLoader();
+            floorTexture = texLoader.load('boden.jpg');
+            floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping;
+            floorTexture.repeat.set(30, 30);
+            wallTexture = texLoader.load('wand.jpg');
+            wallTexture.wrapS = wallTexture.wrapT = THREE.RepeatWrapping;
+            wallTexture.repeat.set(1, 1);
+            floorMaterial = new THREE.MeshStandardMaterial({ map: floorTexture, color: 0x444444 });
+            wallMaterial = new THREE.MeshStandardMaterial({ map: wallTexture, color: 0x333333 });
+            lampMaterial = new THREE.MeshStandardMaterial({ color: 0x220000, emissive: 0xff0000, emissiveIntensity: 0 });
+
+            renderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+            postScene = new THREE.Scene();
+            postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            postMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    tDiffuse: { value: renderTarget.texture },
+                    time: { value: 0 },
+                    intensity: { value: 0.35 }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform sampler2D tDiffuse;
+                    uniform float time;
+                    uniform float intensity;
+                    varying vec2 vUv;
+                    float rand(vec2 co) {
+                        return fract(sin(dot(co.xy, vec2(12.9898,78.233))) * 43758.5453);
+                    }
+                    void main() {
+                        vec2 uv = vUv;
+                        float wave = sin((uv.y + time * 0.05) * 80.0) * 0.002 * intensity;
+                        uv.x += wave;
+                        vec4 col = texture2D(tDiffuse, uv);
+                        float scan = sin(uv.y * 800.0) * 0.02 * intensity;
+                        float vign = smoothstep(0.9, 0.4, distance(uv, vec2(0.5)));
+                        float noise = (rand(uv * vec2(400.0, 200.0) + time) - 0.5) * 0.06 * intensity;
+                        col.rgb -= scan;
+                        col.rgb += noise;
+                        col.rgb *= vign;
+                        gl_FragColor = col;
+                    }
+                `
+            });
+            postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial));
+
+            // --- TASCHENLAMPE FIX ---
+            torch = new THREE.SpotLight(0xffffff, 5, 25, Math.PI/6, 0.5);
+            torch.castShadow = true;
+            torch.position.set(0, 0, 0);
+            camera.add(torch);
+
+            torchTarget = new THREE.Object3D();
+            torchTarget.position.set(0, 0, -1);
+            camera.add(torchTarget);
+            torch.target = torchTarget; 
+            
+            scene.add(camera);
+            cutsceneLight = new THREE.PointLight(0xffffff, 0, 12);
+            cutsceneLight.position.set(0, 2.2, 0);
+            camera.add(cutsceneLight);
+
+            // BODEN & DECKE
+            const planeGeo = new THREE.PlaneGeometry(2000, 2000);
+            const floor = new THREE.Mesh(planeGeo, floorMaterial);
+            floor.rotation.x = -Math.PI/2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            const ceil = new THREE.Mesh(planeGeo, new THREE.MeshStandardMaterial({ color: 0x050505 }));
+            ceil.rotation.x = Math.PI/2;
+            ceil.position.y = 4; 
+            scene.add(ceil);
+
+            // MONSTER
+            monster = new THREE.Group();
+            const mBody = new THREE.Mesh(new THREE.BoxGeometry(0.5, 3.0, 0.5), new THREE.MeshBasicMaterial({color: 0x000000}));
+            const mHead = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshBasicMaterial({color: 0x050505}));
+            mHead.position.set(0, 2.1, 0);
+            const mArmL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.4, 0.2), new THREE.MeshBasicMaterial({color: 0x000000}));
+            const mArmR = mArmL.clone();
+            mArmL.position.set(-0.35, 1.3, 0);
+            mArmR.position.set(0.35, 1.3, 0);
+            const mLegL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.6, 0.25), new THREE.MeshBasicMaterial({color: 0x000000}));
+            const mLegR = mLegL.clone();
+            mLegL.position.set(-0.15, 0.2, 0);
+            mLegR.position.set(0.15, 0.2, 0);
+            const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07), new THREE.MeshBasicMaterial({color: 0xff0000}));
+            const e1 = eye.clone(); e1.position.set(0.15, 2.1, 0.28);
+            const e2 = eye.clone(); e2.position.set(-0.15, 2.1, 0.28);
+            monster.add(mBody, mHead, mArmL, mArmR, mLegL, mLegR, e1, e2);
+            monster.position.set(0, -10, 0); 
+            scene.add(monster);
+
+            setupControls();
+            animate();
+        }
+
+        function isWall(x, z) {
+            if(Math.abs(x) < 2 && Math.abs(z) < 2) return false;
+            return (Math.sin(x * 0.4) * Math.cos(z * 0.4)) > 0.45;
+        }
+
+        function setupControls() {
+            window.addEventListener('mousemove', e => {
+                if(mode === 'cutscene' || mode === 'win' || mode === 'trailer') return;
+                yaw -= e.movementX * 0.002;
+                pitch -= e.movementY * 0.002;
+                pitch = Math.max(-1.4, Math.min(1.4, pitch));
+            });
+            window.addEventListener('keydown', e => {
+                if(mode === 'trailer') return;
+                if(e.code === 'KeyW') moveF = true; if(e.code === 'KeyS') moveB = true;
+                if(e.code === 'KeyA') moveL = true; if(e.code === 'KeyD') moveR = true;
+                if(e.code === 'Digit1') {
+                    document.getElementById('start').style.display = 'flex';
+                    document.getElementById('radar').style.display = 'none';
+                    document.exitPointerLock();
+                }
+                if(e.code === 'Digit7') {
+                    // Alarm only in corridor; no manual trigger here.
+                }
+                if(e.code === 'Space' && (mode === 'countdown' || mode === 'normal' || mode === 'escape')) {
+                    lookBackUntil = Date.now() + 700;
+                }
+                if(e.code === 'KeyM' && mode === 'normal') {
+                    ensurePortal();
+                    showRouteToPortal();
+                }
+            });
+            window.addEventListener('keyup', e => {
+                if(e.code === 'KeyW') moveF = false; if(e.code === 'KeyS') moveB = false;
+                if(e.code === 'KeyA') moveL = false; if(e.code === 'KeyD') moveR = false;
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            let time = Date.now();
+            if(mode === 'trailer') {
+                updateTrailer(time);
+                updateAlarmLights(time);
+                postMaterial.uniforms.time.value = time * 0.001;
+                postMaterial.uniforms.intensity.value = 0.6;
+                renderer.setRenderTarget(renderTarget);
+                renderer.render(scene, camera);
+                renderer.setRenderTarget(null);
+                renderer.render(postScene, postCamera);
+                return;
+            }
+            updateCameraRotation(time);
+            
+            // BEWEGUNG
+            const dir = new THREE.Vector3();
+            const canMove = (mode === 'normal' || mode === 'escape');
+            if(canMove) {
+                if(moveF) dir.z -= 1; if(moveB) dir.z += 1;
+                if(moveL) dir.x -= 1; if(moveR) dir.x += 1;
+                const speed = (mode === 'escape' && moveF) ? 0.22 : 0.13;
+                dir.applyEuler(new THREE.Euler(0, yaw, 0)).normalize().multiplyScalar(speed);
+                if(mode === 'normal') {
+                    if(!isWall(Math.round((camera.position.x + dir.x)/4), Math.round(camera.position.z/4))) camera.position.x += dir.x;
+                    if(!isWall(Math.round(camera.position.x/4), Math.round((camera.position.z + dir.z)/4))) camera.position.z += dir.z;
+                } else if(mode === 'escape') {
+                    camera.position.x += dir.x;
+                    camera.position.z += dir.z;
+                    camera.position.x = Math.max(-2.5, Math.min(2.5, camera.position.x));
+                }
+            }
+
+            if(mode === 'normal') {
+                // BLINZELN
+                if(time > lastBlink + 9000) {
+                    document.getElementById('blink').style.opacity = 1;
+                    setTimeout(() => {
+                        document.getElementById('blink').style.opacity = 0;
+                        if(Math.random() > 0.4) {
+                            let dist = 5 + Math.random() * 6;
+                            let angle = yaw + (Math.random() - 0.5);
+                            monster.position.set(camera.position.x - Math.sin(angle)*dist, 0, camera.position.z - Math.cos(angle)*dist);
+                        } else { monster.position.y = -10; }
+                    }, 180);
+                    lastBlink = time;
+                }
+
+                // ECKEN-BLICK: Monster schaut kurz um die Ecke
+                if(!peeking && Math.random() > 0.993) {
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    const offset = new THREE.Vector3(side * 1.2, 0.1, -4.5).applyEuler(new THREE.Euler(0, yaw, 0));
+                    monster.position.set(camera.position.x + offset.x, 0, camera.position.z + offset.z);
+                    peeking = true;
+                    peekStart = time;
+                }
+            }
+
+            // --- LOOK-AWAY LOGIK ---
+            if(mode === 'normal' && monster.position.y >= 0) {
+                monster.lookAt(camera.position.x, 1.5, camera.position.z);
+                
+                // Winkel zwischen Kamera-Blick und Monster berechnen
+                const camDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+                const toMonster = new THREE.Vector3().subVectors(monster.position, camera.position).normalize();
+                const dot = camDir.dot(toMonster);
+                const distToMonster = monster.position.distanceTo(camera.position);
+
+                // Wenn der Winkel klein ist (Monster im Fokus), Lampe aus
+                if(dot > 0.96) { 
+                    torch.intensity = 0; 
+                } else {
+                    torch.intensity = 4.5 + Math.random() * 1.8; // Normales Flackern
+                }
+
+                panicLevel = Math.max(0, Math.min(1, 1 - (distToMonster / 12)));
+                document.body.classList.toggle('panic', panicLevel > 0.35);
+
+                if(audioCtx) {
+                    humGain.gain.value = 0.12 + panicLevel * 0.18;
+                    heartGain.gain.value = panicLevel * 0.4;
+                    noiseGain.gain.value = panicLevel * 0.25;
+                }
+
+                if(peeking && dot > 0.95) {
+                    peeking = false;
+                    monster.position.y = -10;
+                }
+                if(peeking && (time - peekStart) > peekDuration) {
+                    peeking = false;
+                    monster.position.y = -10;
+                }
+                // Alarm only during corridor escape.
+                if(distToMonster < 1.6) location.reload();
+            } else {
+                if(mode === 'normal') {
+                    torch.intensity = 5;
+                    panicLevel *= 0.98;
+                    document.body.classList.toggle('panic', false);
+                    if(audioCtx) {
+                        humGain.gain.value = 0.12;
+                        heartGain.gain.value = 0.0;
+                        noiseGain.gain.value = 0.0;
+                    }
+                }
+            }
+
+            if(mode === 'normal' && time - lastWhisper > 7000 && Math.random() > 0.6) {
+                showWhisper();
+                lastWhisper = time;
+            }
+
+            updateModeFlow(time);
+            updateRadar();
+            if(mode === 'normal' && time - lastMazeUpdate > 120) {
+                updateMaze();
+                lastMazeUpdate = time;
+            }
+            if(mode === 'normal') checkPortalTrigger();
+            updateAlarmLights(time);
+            postMaterial.uniforms.time.value = time * 0.001;
+            postMaterial.uniforms.intensity.value = alarmActive ? 0.9 : (0.35 + panicLevel * 0.35);
+            renderer.setRenderTarget(renderTarget);
+            renderer.render(scene, camera);
+            renderer.setRenderTarget(null);
+            renderer.render(postScene, postCamera);
+        }
+
+        function triggerAlarm() {
+            if(!alarmAudio || alarmActive) return;
+            alarmActive = true;
+            document.body.classList.add('alarm');
+            alarmAudio.currentTime = 0;
+            alarmAudio.play().catch(() => {
+                alarmActive = false;
+                document.body.classList.remove('alarm');
+            });
+        }
+
+        function showWhisper() {
+            const whisper = document.getElementById('whisper');
+            whisper.textContent = whisperTexts[Math.floor(Math.random() * whisperTexts.length)];
+            whisper.style.opacity = '1';
+            setTimeout(() => { whisper.style.opacity = '0'; }, 800);
+        }
+
+        function updateRadar() {
+            const mDot = document.getElementById('radar-monster');
+            if(mode !== 'normal') {
+                document.getElementById('radar').style.display = 'none';
+                return;
+            }
+            if(monster.position.y < 0) mDot.style.display = 'none';
+            else {
+                mDot.style.display = 'block';
+                mDot.style.left = (70 + (monster.position.x - camera.position.x) * 4) + 'px';
+                mDot.style.top = (70 + (monster.position.z - camera.position.z) * 4) + 'px';
+            }
+        }
+
+        function updateMaze() {
+            let cx = Math.round(camera.position.x / 4);
+            let cz = Math.round(camera.position.z / 4);
+            for(let x = cx - 8; x <= cx + 8; x++) {
+                for(let z = cz - 8; z <= cz + 8; z++) {
+                    let key = `${x},${z}`;
+                    if(isWall(x, z) && !walls.has(key)) {
+                        const m = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 4), wallMaterial);
+                        m.position.set(x * 4, 2, z * 4);
+                        m.castShadow = true; m.receiveShadow = true;
+                        scene.add(m);
+                        walls.set(key, m);
+                        if(Math.random() > 0.92) {
+                            const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.4), lampMaterial);
+                            const ox = (Math.random() - 0.5) * 1.5;
+                            const oz = (Math.random() - 0.5) * 1.5;
+                            lamp.position.set(x * 4 + ox, 3.4, z * 4 + oz);
+                            const light = new THREE.PointLight(0xff0000, 0, 6);
+                            light.position.copy(lamp.position);
+                            scene.add(lamp);
+                            scene.add(light);
+                            alarmLights.push(light);
+                        }
+                    }
+                }
+            }
+            ensurePortal();
+        }
+
+        function updateAlarmLights(time) {
+            const pulse = alarmActive ? (0.6 + Math.sin(time * 0.02) * 0.4) : 0;
+            lampMaterial.emissiveIntensity = alarmActive ? 1.2 * pulse : 0;
+            for(let i = 0; i < alarmLights.length; i++) {
+                alarmLights[i].intensity = 3.0 * pulse;
+            }
+        }
+
+        function startCountdown(seconds) {
+            mode = 'countdown';
+            countdownEnd = Date.now() + (seconds * 1000);
+            document.getElementById('countdown').style.opacity = '1';
+            document.getElementById('radar').style.display = 'none';
+        }
+
+        function startCutscene() {
+            mode = 'cutscene';
+            cutsceneStart = Date.now();
+            document.getElementById('countdown').style.opacity = '0';
+            clearMaze();
+            if(portalMesh) scene.remove(portalMesh);
+            buildCorridor();
+            cutsceneBaseYaw = yaw;
+            spawnChaseMonsters();
+            monster.position.y = -10;
+            torch.intensity = 0;
+            cutsceneLight.intensity = 1.6;
+            scene.fog.far = escapeFogFar;
+        }
+
+        function startEscape() {
+            mode = 'escape';
+            document.getElementById('radar').style.display = 'none';
+            lightCorridor(true);
+            cutsceneLight.intensity = 0;
+            showMessage('RUN FOR YOUR LIFE', 3000);
+            setTimeout(() => {
+                if(alarmAudio) alarmAudio.loop = true;
+                triggerAlarm();
+                chaseActive = true;
+            }, 3000);
+        }
+
+        function winGame() {
+            mode = 'win';
+            chaseActive = false;
+            showMessage('PART 2 COMMING', 6000);
+            document.body.classList.remove('alarm');
+            alarmActive = false;
+            if(alarmAudio) alarmAudio.pause();
+            cutsceneLight.intensity = 0;
+        }
+
+        function showMessage(text, ms) {
+            const msg = document.getElementById('message');
+            msg.textContent = text;
+            msg.style.opacity = '1';
+            setTimeout(() => { msg.style.opacity = '0'; }, ms);
+        }
+
+        function updateModeFlow(time) {
+            if(mode === 'trailer') return;
+            if(mode === 'countdown') {
+                const remaining = Math.max(0, Math.ceil((countdownEnd - time) / 1000));
+                document.getElementById('countdown').textContent = remaining > 0 ? remaining : 'JETZT';
+                if(time >= countdownEnd) startCutscene();
+            }
+
+            if(mode === 'cutscene') {
+                const turn = 2000;
+                const hold = 1200;
+                const back = 2000;
+                const t = time - cutsceneStart;
+                if(t > (turn + hold + back)) {
+                    startEscape();
+                }
+            }
+
+            if(mode === 'escape') {
+                updateChase(time);
+                if(camera.position.z <= (corridorStartZ - corridorLength + 4)) {
+                    winGame();
+                }
+            }
+        }
+
+        function updateCameraRotation(time) {
+            let camYaw = yaw;
+            let camPitch = pitch;
+            if((mode === 'countdown' || mode === 'normal' || mode === 'escape') && time < lookBackUntil) {
+                camYaw = yaw + Math.PI;
+            }
+            if(mode === 'cutscene') {
+                const turn = 2000;
+                const hold = 1200;
+                const back = 2000;
+                const t = time - cutsceneStart;
+                const targetYaw = cutsceneBaseYaw + Math.PI;
+                if(t < turn) {
+                    camYaw = cutsceneBaseYaw + (targetYaw - cutsceneBaseYaw) * (t / turn);
+                } else if(t < turn + hold) {
+                    camYaw = targetYaw;
+                } else if(t < turn + hold + back) {
+                    const r = (t - turn - hold) / back;
+                    camYaw = targetYaw + (cutsceneBaseYaw - targetYaw) * r;
+                } else {
+                    camYaw = cutsceneBaseYaw;
+                }
+                camPitch = 0;
+            }
+            camera.rotation.set(camPitch, camYaw, 0, 'YXZ');
+        }
+
+        function clearMaze() {
+            for(const m of walls.values()) scene.remove(m);
+            walls.clear();
+            if(portalMesh) scene.remove(portalMesh);
+            portalMesh = null;
+            portalActive = false;
+            portalCell = null;
+            if(routeLine) scene.remove(routeLine);
+            routeLine = null;
+            if(routeTimeout) clearTimeout(routeTimeout);
+        }
+
+        function buildCorridor() {
+            corridorGroup = new THREE.Group();
+            corridorStartZ = camera.position.z;
+            camera.position.set(0, 1.7, corridorStartZ);
+            yaw = 0;
+            pitch = 0;
+            const width = 6;
+            const height = 4;
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, corridorLength), floorMaterial);
+            floor.rotation.x = -Math.PI/2;
+            floor.position.z = corridorStartZ - corridorLength / 2;
+            corridorGroup.add(floor);
+
+            const ceil = new THREE.Mesh(new THREE.PlaneGeometry(width, corridorLength), new THREE.MeshStandardMaterial({ color: 0x070707 }));
+            ceil.rotation.x = Math.PI/2;
+            ceil.position.y = height;
+            ceil.position.z = corridorStartZ - corridorLength / 2;
+            corridorGroup.add(ceil);
+
+            const wallGeo = new THREE.PlaneGeometry(corridorLength, height);
+            const wallL = new THREE.Mesh(wallGeo, wallMaterial);
+            wallL.rotation.y = Math.PI/2;
+            wallL.position.set(-width / 2, height / 2, corridorStartZ - corridorLength / 2);
+            corridorGroup.add(wallL);
+            const wallR = wallL.clone();
+            wallR.position.x = width / 2;
+            wallR.rotation.y = -Math.PI/2;
+            corridorGroup.add(wallR);
+
+            doorMesh = new THREE.Mesh(new THREE.BoxGeometry(3, 3.2, 0.2), new THREE.MeshStandardMaterial({ color: 0x222222 }));
+            doorMesh.position.set(0, 1.6, corridorStartZ - corridorLength + 2);
+            corridorGroup.add(doorMesh);
+
+            for(let i = 0; i < 10; i++) {
+                const z = corridorStartZ - (corridorLength * (i + 1) / 11);
+                const light = new THREE.PointLight(0xffffff, 0, 12);
+                light.position.set(0, 3.2, z);
+                corridorLights.push(light);
+                corridorGroup.add(light);
+            }
+            scene.add(corridorGroup);
+        }
+
+        function lightCorridor(on) {
+            for(const l of corridorLights) l.intensity = on ? 2.6 : 0;
+        }
+
+        function createMonsterVariant(scaleY, eyeColor) {
+            const g = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 3.2 * scaleY, 0.6), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.MeshBasicMaterial({ color: 0x030303 }));
+            head.position.set(0, 2.2 * scaleY, 0);
+            const armL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.5 * scaleY, 0.2), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+            const armR = armL.clone();
+            armL.position.set(-0.45, 1.2 * scaleY, 0);
+            armR.position.set(0.45, 1.2 * scaleY, 0);
+            const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07), new THREE.MeshBasicMaterial({ color: eyeColor }));
+            const e1 = eye.clone(); e1.position.set(0.2, 2.2 * scaleY, 0.35);
+            const e2 = eye.clone(); e2.position.set(-0.2, 2.2 * scaleY, 0.35);
+            g.add(body, head, armL, armR, e1, e2);
+            return g;
+        }
+
+        function spawnChaseMonsters() {
+            chaseMonsters = [];
+            const variants = [
+                createMonsterVariant(1.2, 0xff0000),
+                createMonsterVariant(0.9, 0xff6600),
+                createMonsterVariant(1.0, 0xff00ff),
+                createMonsterVariant(1.1, 0x00ffff)
+            ];
+            const offsets = [-2.5, -0.8, 0.8, 2.5];
+            for(let i = 0; i < variants.length; i++) {
+                const m = variants[i];
+                m.position.set(offsets[i], 0, corridorStartZ + 10 + (i * 1.5));
+                scene.add(m);
+                chaseMonsters.push(m);
+            }
+        }
+
+        function ensurePortal() {
+            if(portalMesh || mode !== 'normal') return;
+            const candidates = [
+                { x: 6, z: 0 }, { x: -6, z: 0 }, { x: 0, z: 6 }, { x: 0, z: -6 },
+                { x: 8, z: 2 }, { x: -8, z: -2 }, { x: 2, z: -8 }, { x: -2, z: 8 }
+            ];
+            let chosen = null;
+            for(const c of candidates) {
+                if(!isWall(c.x, c.z) && (Math.abs(c.x) > 3 || Math.abs(c.z) > 3)) {
+                    chosen = c;
+                    break;
+                }
+            }
+            if(!chosen) return;
+            portalCell = chosen;
+            portalActive = true;
+            portalMesh = new THREE.Mesh(
+                new THREE.BoxGeometry(2.4, 3.2, 0.4),
+                new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0x220000, emissiveIntensity: 0.2 })
+            );
+            portalMesh.position.set(chosen.x * 4, 1.6, chosen.z * 4);
+            scene.add(portalMesh);
+        }
+
+        function checkPortalTrigger() {
+            if(!portalActive || !portalMesh) return;
+            if(camera.position.distanceTo(portalMesh.position) < 2.2) {
+                portalActive = false;
+                portalMesh.visible = false;
+                startCountdown(3);
+            }
+        }
+
+        function showRouteToPortal() {
+            if(!portalCell) return;
+            const start = {
+                x: Math.round(camera.position.x / 4),
+                z: Math.round(camera.position.z / 4)
+            };
+            const goal = { x: portalCell.x, z: portalCell.z };
+            const path = findRoute(start, goal);
+            if(!path) {
+                showMessage('KEIN WEG', 1500);
+                return;
+            }
+            buildRouteLine(path);
+            if(routeTimeout) clearTimeout(routeTimeout);
+            routeTimeout = setTimeout(() => {
+                if(routeLine) {
+                    scene.remove(routeLine);
+                    routeLine = null;
+                }
+            }, 8000);
+        }
+
+        function findRoute(start, goal) {
+            const key = (p) => `${p.x},${p.z}`;
+            const bounds = {
+                minX: Math.min(start.x, goal.x) - 20,
+                maxX: Math.max(start.x, goal.x) + 20,
+                minZ: Math.min(start.z, goal.z) - 20,
+                maxZ: Math.max(start.z, goal.z) + 20
+            };
+            const queue = [start];
+            const cameFrom = new Map();
+            cameFrom.set(key(start), null);
+
+            while(queue.length) {
+                const current = queue.shift();
+                if(current.x === goal.x && current.z === goal.z) {
+                    const path = [];
+                    let cur = current;
+                    while(cur) {
+                        path.push({ x: cur.x, z: cur.z });
+                        cur = cameFrom.get(key(cur));
+                    }
+                    return path.reverse();
+                }
+                const neighbors = [
+                    { x: current.x + 1, z: current.z },
+                    { x: current.x - 1, z: current.z },
+                    { x: current.x, z: current.z + 1 },
+                    { x: current.x, z: current.z - 1 }
+                ];
+                for(const n of neighbors) {
+                    if(n.x < bounds.minX || n.x > bounds.maxX || n.z < bounds.minZ || n.z > bounds.maxZ) continue;
+                    if(isWall(n.x, n.z)) continue;
+                    const k = key(n);
+                    if(cameFrom.has(k)) continue;
+                    cameFrom.set(k, current);
+                    queue.push(n);
+                }
+            }
+            return null;
+        }
+
+        function buildRouteLine(path) {
+            if(routeLine) scene.remove(routeLine);
+            const points = path.map(p => new THREE.Vector3(p.x * 4, 0.08, p.z * 4));
+            const geom = new THREE.BufferGeometry().setFromPoints(points);
+            const mat = new THREE.LineBasicMaterial({ color: 0xff0000 });
+            routeLine = new THREE.Line(geom, mat);
+            scene.add(routeLine);
+        }
+
+        function updateChase(time) {
+            if(!chaseActive) return;
+            for(const m of chaseMonsters) {
+                const dir = new THREE.Vector3().subVectors(camera.position, m.position).normalize();
+                const dist = m.position.distanceTo(camera.position);
+                const speed = 0.16 + Math.max(0, (1 - dist / 18)) * 0.04;
+                m.position.add(dir.multiplyScalar(speed));
+                m.lookAt(camera.position.x, 1.6, camera.position.z);
+                if(mode !== 'trailer' && m.position.distanceTo(camera.position) < 1.6) location.reload();
+            }
+        }
+
+        function setupTrailerScene() {
+            clearMaze();
+            buildCorridor();
+            spawnChaseMonsters();
+            lightCorridor(true);
+            cutsceneLight.intensity = 0.8;
+            scene.fog.far = escapeFogFar;
+            alarmActive = false;
+            document.body.classList.remove('alarm');
+            chaseActive = false;
+            monster.position.set(0, -10, 0);
+        }
+
+        function updateTrailer(time) {
+            const t = (time - trailerStart) / 1000;
+            const baseForward = Math.max(corridorStartZ - corridorLength + 8, corridorStartZ + 10 - (t * 7.5));
+            let camX = Math.sin(t * 0.6) * 0.6;
+            let camY = 1.7 + Math.sin(t * 0.9) * 0.1;
+            let camZ = baseForward;
+            let camYaw = Math.sin(t * 0.7) * 0.04;
+            let camPitch = Math.sin(t * 0.8) * 0.02;
+
+            if(t > 4 && t <= 7) {
+                camX = 6.8;
+                camY = 2.2;
+                camZ = baseForward - 6;
+                camera.position.set(camX, camY, camZ);
+                camera.lookAt(0, 1.6, camZ - 6);
+            } else if(t > 7 && t <= 10) {
+                camX = 0;
+                camY = 1.6;
+                camZ = baseForward - 4;
+                camYaw = 0;
+                camPitch = 0;
+                camera.position.set(camX, camY, camZ);
+                camera.rotation.set(camPitch, camYaw, 0, 'YXZ');
+            } else if(t > 18 && t <= 22) {
+                camX = 0;
+                camY = 1.7;
+                camZ = corridorStartZ - corridorLength + 12;
+                camera.position.set(camX, camY, camZ);
+                camera.lookAt(0, 1.6, camZ - 8);
+            } else {
+                camera.position.set(camX, camY, camZ);
+                camera.rotation.set(camPitch, camYaw, 0, 'YXZ');
+            }
+
+            for(let i = 0; i < chaseMonsters.length; i++) {
+                const m = chaseMonsters[i];
+                if(t > 7 && t <= 10 && i === 0) {
+                    m.position.set(0, 0.2, camZ - 1.6);
+                } else {
+                    m.position.x = (-2.5 + i * 1.7);
+                    m.position.z = camZ - 12 - (i * 2.2);
+                }
+                m.lookAt(camera.position.x, 1.6, camera.position.z);
+            }
+
+            trailerEventOnce('part1', t > 1, () => showMessage('PART 1', 1200));
+            trailerEventOnce('blink', t > 4, () => {
+                document.getElementById('blink').style.opacity = 1;
+                setTimeout(() => { document.getElementById('blink').style.opacity = 0; }, 180);
+                showMessage('BLINZELN', 900);
+            });
+            trailerEventOnce('corridor', t > 5, () => showMessage('DER FLUR', 1200));
+            trailerEventOnce('dont', t > 7.2, () => showMessage('NICHT BLINZELN', 1200));
+            trailerEventOnce('jump', t > 8.2, () => {
+                document.getElementById('blink').style.opacity = 1;
+                setTimeout(() => { document.getElementById('blink').style.opacity = 0; }, 140);
+                showMessage('HINTER DIR', 900);
+            });
+            trailerEventOnce('alarm', t > 10, () => {
+                if(alarmAudio) alarmAudio.loop = false;
+                triggerAlarm();
+                setTimeout(() => {
+                    alarmActive = false;
+                    document.body.classList.remove('alarm');
+                    if(alarmAudio) alarmAudio.pause();
+                }, 2000);
+            });
+            trailerEventOnce('teleport', t > 13.5, () => {
+                showMessage('ER TELEPORTIERT', 1200);
+                trailerTeleportMonster();
+            });
+            trailerEventOnce('laugh', t > 11.5, () => playTrailerLaugh());
+            trailerEventOnce('see', t > 12, () => showMessage('ER SIEHT DICH', 1200));
+            trailerEventOnce('chase', t > 16, () => { chaseActive = true; });
+            trailerEventOnce('run', t > 19, () => showMessage('RUN FOR YOUR LIFE', 1200));
+            trailerEventOnce('exit', t > 22, () => showMessage('EIN AUSWEG', 1200));
+            trailerEventOnce('part2', t > 27, () => showMessage('PART 2 COMMING', 3000));
+
+            if(chaseActive) {
+                updateChase(time);
+            }
+        }
+
+        function trailerEventOnce(key, condition, fn) {
+            if(!condition || trailerEvents.has(key)) return;
+            trailerEvents.add(key);
+            fn();
+        }
+
+        function trailerTeleportMonster() {
+            monster.position.set(1.8, 0, camera.position.z - 10);
+            monster.lookAt(camera.position.x, 1.6, camera.position.z);
+            document.getElementById('blink').style.opacity = 1;
+            setTimeout(() => { document.getElementById('blink').style.opacity = 0; }, 120);
+            setTimeout(() => {
+                const side = Math.random() > 0.5 ? 1 : -1;
+                monster.position.set(side * 1.2, 0, camera.position.z - 2.6);
+                monster.lookAt(camera.position.x, 1.6, camera.position.z);
+            }, 240);
+            setTimeout(() => { monster.position.set(0, -10, 0); }, 900);
+        }
+
+        function initTrailerAudio() {
+            if(!audioCtx || trailerMusicGain) return;
+            trailerMusicGain = audioCtx.createGain();
+            trailerMusicGain.gain.value = 0.12;
+            trailerMusicGain.connect(audioCtx.destination);
+
+            trailerOscA = audioCtx.createOscillator();
+            trailerOscA.type = 'sawtooth';
+            trailerOscA.frequency.value = 52;
+
+            trailerOscB = audioCtx.createOscillator();
+            trailerOscB.type = 'triangle';
+            trailerOscB.frequency.value = 104;
+
+            trailerLfo = audioCtx.createOscillator();
+            trailerLfo.type = 'sine';
+            trailerLfo.frequency.value = 0.4;
+            const lfoGain = audioCtx.createGain();
+            lfoGain.gain.value = 6;
+            trailerLfo.connect(lfoGain).connect(trailerOscA.frequency);
+
+            trailerOscA.connect(trailerMusicGain);
+            trailerOscB.connect(trailerMusicGain);
+            trailerOscA.start();
+            trailerOscB.start();
+            trailerLfo.start();
+
+            trailerLaughGain = audioCtx.createGain();
+            trailerLaughGain.gain.value = 0;
+            trailerLaughGain.connect(audioCtx.destination);
+        }
+
+        function playTrailerLaugh() {
+            if(!audioCtx || !trailerLaughGain) return;
+            const noiseBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.6, audioCtx.sampleRate);
+            const data = noiseBuffer.getChannelData(0);
+            for(let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1);
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = noiseBuffer;
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 600;
+            noise.connect(filter).connect(trailerLaughGain);
+            trailerLaughGain.gain.setValueAtTime(0, audioCtx.currentTime);
+            trailerLaughGain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.05);
+            trailerLaughGain.gain.linearRampToValueAtTime(0.0, audioCtx.currentTime + 0.6);
+            noise.start();
+        }
+    </script>
+</body>
+</html>
