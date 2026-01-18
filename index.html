@@ -584,7 +584,7 @@
             spawnChaseMonsters();
             monster.position.y = -10;
             torch.intensity = 0;
-            cutsceneLight.intensity = 1.6;
+            cutsceneLight.intensity = 2.4;
             scene.fog.far = escapeFogFar;
         }
 
@@ -873,7 +873,8 @@
             for(const m of chaseMonsters) {
                 const dir = new THREE.Vector3().subVectors(camera.position, m.position).normalize();
                 const dist = m.position.distanceTo(camera.position);
-                const speed = 0.16 + Math.max(0, (1 - dist / 18)) * 0.04;
+                const baseSpeed = 0.16 + Math.max(0, (1 - dist / 18)) * 0.04;
+                const speed = (mode === 'escape') ? baseSpeed * 2.0 : baseSpeed;
                 m.position.add(dir.multiplyScalar(speed));
                 m.lookAt(camera.position.x, 1.6, camera.position.z);
                 if(mode !== 'trailer' && m.position.distanceTo(camera.position) < 1.6) location.reload();
